@@ -6,6 +6,8 @@
 #include <linux/cdev.h> /* struct cdev, ... */
 #include <linux/slab.h> /* kmalloc() */
 
+#include <linux/i2c.h>  /* struct i2c_device_id, ... */
+
 /* 
  * The structure to represent 'eep_dev' devices.
  */
@@ -13,6 +15,7 @@
 struct eep_dev {
 	unsigned char *data;
 	struct cdev cdev;
+    struct i2c_client *client;
 };
 
 #define EEP_DEVICE_NAME     "eep-mem"
@@ -23,16 +26,15 @@ static unsigned int eep_major = 0;
 static unsigned int eep_minor = 0;
 static struct class *eep_class = NULL;
 
-struct eep_dev *my_eep_dev = NULL;
 struct file_operations eep_fops;
 
 int eep_open (struct inode *inode, struct file *filp){
-	pr_info("DBG: passed %s %d\n", __FUNCTION__, __LINE__);
+    pr_info("DBG: passed %s %d\n", __FUNCTION__, __LINE__);
 	return 0;
 }
 
 int eep_release(struct inode *inode, struct file *filp){
-	pr_info("DBG: passed %s %d\n", __FUNCTION__, __LINE__);
+    pr_info("DBG: passed %s %d\n", __FUNCTION__, __LINE__);
 	return 0;
 }
 
@@ -60,13 +62,38 @@ struct file_operations eep_fops = {
 	.llseek =   eep_llseek,
 };
 
-static __init int hello_init(void) {
-	int err = 0;
+static int ee24lc256_probe(struct i2c_client *client, const struct i2c_device_id *id){
+	unsigned char data[5];
+    u8 reg_addr[2];
+    struct i2c_msg msg[2];
+    int err = 0;
 	struct eep_dev *eep_device = NULL;
 	dev_t curr_dev = 0;
 	struct device *device = NULL;
 
-	pr_info("DBG: passed %s %d\n", __FUNCTION__, __LINE__);
+    if(!i2c_check_functionality(client->adapter, I2C_FUNC_SMBUS_BYTE_DATA))
+        return -EIO;
+
+    /*From the 24LC256 datasheet 
+    * We need to perform a Sequential Read test (read 0x0000 to 0x0005 address) 
+    *  1. The word address must first be set. Send the word address to the 24lc256 as part of a write operation.
+    *  2. The master then issues the control byte again, but with the R/W bit set to one (read operation).
+    */
+    reg_addr[0] = 0x00;
+    reg_addr[1] = 0x00;
+
+    msg[0].addr = client->addr;
+    msg[0].flags = 0;                    /* Write */
+    msg[0].len = 2;                      /* Address is 2byte coded */
+    msg[0].buf = reg_addr; 
+
+    msg[1].addr = client->addr;
+    msg[1].flags = I2C_M_RD;             /* Read */
+    msg[1].len = 5; //count; 
+    msg[1].buf = data;
+
+    if (i2c_transfer(client->adapter, msg, 2) < 0)
+        pr_err("ee24lc512: i2c_transfer failed\n");
 
 	/* Get a range of minor numbers (starting with 0) to work with */
 	err = alloc_chrdev_region(&curr_dev, 0, 1, EEP_DEVICE_NAME);
@@ -83,19 +110,21 @@ static __init int hello_init(void) {
         goto fail;
     }
 
+    /* Allocate memory when the device is opened the first time */
+
      eep_device = (struct eep_dev *)kzalloc(sizeof(struct eep_dev), GFP_KERNEL);
     if (eep_device == NULL) {
         err = -ENOMEM;
         goto fail;
     }
-    my_eep_dev = eep_device;
 
-    /* Memory is to be allocated when the device is opened the first time */
     eep_device->data = NULL;
+    eep_device->client = client;
 
     cdev_init(&eep_device->cdev, &eep_fops);
     eep_device->cdev.owner = THIS_MODULE;
     err = cdev_add(&eep_device->cdev, curr_dev, 1);
+
     if (err){
         pr_err("Error while trying to add %s", EEP_DEVICE_NAME);
         goto fail;
@@ -112,6 +141,9 @@ static __init int hello_init(void) {
         goto fail;
     }
 
+    i2c_set_clientdata(client, eep_device);
+
+    pr_info("DBG: passed %s %d\n", __FUNCTION__, __LINE__);
     return 0;
 
 fail:
@@ -124,24 +156,59 @@ fail:
     return err;
 }
 
-static __exit void hello_exit(void) {
+static int ee24lc256_remove(struct i2c_client *client){
+    struct eep_dev *my_dev = NULL;
 	dev_t curr_dev = 0;
+    
+    my_dev = i2c_get_clientdata(client);
+    if (my_dev == NULL){
+        pr_err("Container_of did not found any valid data\n");
+        return -ENODEV; /* No such device */
+    }
 	curr_dev = MKDEV(eep_major, eep_minor);
 
 	device_destroy(eep_class, curr_dev);
-	cdev_del(&(my_eep_dev->cdev));
+	cdev_del(&(my_dev->cdev));
 	class_destroy(eep_class);
 
-	kfree(my_eep_dev);
+	kfree(my_dev);
 
 	/* Freeing the allocated device */
 	unregister_chrdev_region(curr_dev, 1);
 
 	pr_info("DBG: passed %s %d\n", __FUNCTION__, __LINE__);
+
+    return 0;
 }
 
-module_init(hello_init);
-module_exit(hello_exit);
+static const struct i2c_device_id ee24lc256_id[] = {
+    {"ee24lc256",0},
+    {}
+};
+
+MODULE_DEVICE_TABLE(i2c, ee24lc256_id);
+
+static const struct of_device_id ee24lc256_of_match[] = {
+    {
+        .compatible = "microchip,ee24lc256"
+    },
+    {}
+};
+
+MODULE_DEVICE_TABLE(of, ee24lc256_of_match);
+
+static struct i2c_driver ee24lc256_i2c_driver = {
+    .driver = {
+        .owner = THIS_MODULE,
+        .name = "ee24lc256",
+        .of_match_table = ee24lc256_of_match
+    },
+    .probe = ee24lc256_probe,
+    .remove = ee24lc256_remove,
+    .id_table = ee24lc256_id
+};
+
+module_i2c_driver(ee24lc256_i2c_driver);
 
 MODULE_LICENSE("GPL");
 MODULE_DESCRIPTION("I2C char driver for 24LC256 EEPROM.");

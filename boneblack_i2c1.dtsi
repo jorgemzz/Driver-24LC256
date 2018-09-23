@@ -1,0 +1,28 @@
+/*
+* Beagle bone black, enable I2C1.
+* Declare an I2C device and set compatible to match with the driver.
+*/
+
+/*Enable i2c1 port*/
+/*Pinmux setting*/
+&am33xx_pinmux{
+	i2c1_pins: pinmux_i2c1_pins {
+        pinctrl-single,pins = <
+          0x158 0x72 /* spi0_d1.i2c1_sda */ 
+          0x15C 0x72 /* spi0_cs0.i2c1_sdl */
+        >;
+     };
+};
+
+&i2c1{
+    pinctrl-names = "default";
+	pinctrl-0 = <&i2c1_pins>;
+
+	status = "okay";
+	clock-frequency = <100000>;
+
+	eeprom: ee24lc256@50 {
+		compatible = "microchip,ee24lc256";
+		reg = <0x50>;
+	};
+};

@@ -29,12 +29,41 @@ static struct class *eep_class = NULL;
 struct file_operations eep_fops;
 
 int eep_open (struct inode *inode, struct file *filp){
-    pr_info("DBG: passed %s %d\n", __FUNCTION__, __LINE__);
+    struct eep_dev *my_dev = NULL;
+    my_dev = container_of(inode->i_cdev, struct eep_dev, cdev);
+
+    if (my_dev == NULL){
+        pr_err("Container_of did not found any valid data\n");
+        return -ENODEV; /* No such device */
+    }
+
+    /* Store a pointer to ee_dev inside filp */
+    filp->private_data = my_dev;
+
+    if (inode->i_cdev != &my_dev->cdev){
+        pr_err("Device open: internal error\n");
+        return -ENODEV; /* No such device */
+    }
+
+    /* Allocate input buffer */
+    my_dev->data = (unsigned char*)kzalloc(EEP_SIZE, GFP_KERNEL);
+    if (my_dev->data == NULL){
+        pr_err("Error allocating memory\n");
+        return -ENOMEM;
+    }
+
+	pr_info("DBG: passed %s %d\n", __FUNCTION__, __LINE__);
 	return 0;
 }
 
 int eep_release(struct inode *inode, struct file *filp){
-    pr_info("DBG: passed %s %d\n", __FUNCTION__, __LINE__);
+    struct eep_dev *dev = filp->private_data;
+    if (dev->data != NULL){
+        kfree(dev->data);
+        dev->data = NULL ;
+    }
+
+	pr_info("DBG: passed %s %d\n", __FUNCTION__, __LINE__);
 	return 0;
 }
 
@@ -171,6 +200,7 @@ static int ee24lc256_remove(struct i2c_client *client){
 	cdev_del(&(my_dev->cdev));
 	class_destroy(eep_class);
 
+    kfree(my_dev->data);
 	kfree(my_dev);
 
 	/* Freeing the allocated device */
